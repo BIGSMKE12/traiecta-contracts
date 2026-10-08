@@ -1,0 +1,33 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "dependabot/github_actions/actions-c003ad7074",
+    "dependabot/npm_and_yarn/packages/protocol/typescript-toolchain-0165bd4f72",
+    "dependabot/npm_and_yarn/packages/protocol/viem-2.57.3",
+    "dependabot/npm_and_yarn/packages/protocol/vitest-04e1cc7ff2",
+    "dependabot/submodules/evm/lib/forge-std-f3dae6e",
+    "hv/fix-10",
+    "hv/fix-11",
+    "main"
+  ],
+  "parent": {
+    "dependabot/github_actions/actions-c003ad7074": "main",
+    "dependabot/npm_and_yarn/packages/protocol/typescript-toolchain-0165bd4f72": "main",
+    "dependabot/npm_and_yarn/packages/protocol/viem-2.57.3": "main",
+    "dependabot/npm_and_yarn/packages/protocol/vitest-04e1cc7ff2": "main",
+    "dependabot/submodules/evm/lib/forge-std-f3dae6e": "main",
+    "hv/fix-10": "main",
+    "hv/fix-11": "main",
+    "main": null
+  },
+  "order": [
+    "main",
+    "dependabot/github_actions/actions-c003ad7074",
+    "dependabot/npm_and_yarn/packages/protocol/typescript-toolchain-0165bd4f72",
+    "dependabot/npm_and_yarn/packages/protocol/viem-2.57.3",
+    "dependabot/npm_and_yarn/packages/protocol/vitest-04e1cc7ff2",
+    "dependabot/submodules/evm/lib/forge-std-f3dae6e",
+    "hv/fix-10",
+    "hv/fix-11"
+  ]
+}
