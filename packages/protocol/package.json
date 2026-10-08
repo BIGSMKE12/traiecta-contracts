@@ -33,7 +33,7 @@
   },
   "scripts": {
     "gen": "node scripts/gen-artifacts.mjs",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node init && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -50,7 +50,7 @@
     "prettier": "^3.9.9",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.0",
-    "viem": "^2.57.2",
+    "viem": "^2.57.3",
     "vitest": "^4.1.11"
   }
 }
