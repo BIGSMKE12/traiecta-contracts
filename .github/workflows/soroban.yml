@@ -83,13 +83,13 @@ jobs:
         # -D warnings after the separator applies to the crates in this workspace and not to the
         # dependency graph, which is the behaviour wanted: an upstream warning in soroban-sdk is
         # not something a pull request here can fix, and a gate nobody can clear gets disabled.
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test
         # The adapters test against the real router rather than a stand in for it, so this runs
         # the whole workspace together. A per crate run would pass while the handover between
         # the router and an adapter was broken, which is the part most worth checking.
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Restore the pinned stellar-cli
         id: stellar-cli-cache
