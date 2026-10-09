@@ -105,8 +105,8 @@ branch gate is a local command nobody trusts.
 ```
 cd soroban
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 The adapters test against the real router rather than a stand in for it, so run the workspace
