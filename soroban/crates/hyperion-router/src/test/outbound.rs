@@ -3,7 +3,9 @@
 use hyperion_core::{HyperionError, RouteKind};
 use soroban_sdk::{testutils::Address as _, Address, String};
 
-use super::doubles::{evm_destination, not_an_evm_address};
+use super::doubles::{
+    assert_topics, decode, evm_destination, field, not_an_evm_address, router_event,
+};
 use super::setup::{World, EVM_DECIMALS, HUNDRED};
 use crate::types::{AdminAction, Destination, OutboundRequest};
 
@@ -556,4 +558,70 @@ fn the_treasury_is_the_only_place_fees_go() {
     assert_eq!(w.token().balance(&w.treasury), HUNDRED / 1_000);
     assert_eq!(w.token().balance(&stranger), 0);
     assert_eq!(w.token().balance(&w.router_id), 0);
+}
+
+#[test]
+fn a_departure_announces_the_transfer_the_indexer_follows() {
+    let w = World::new();
+    let nonce = w.router().bridge_out(
+        &w.user,
+        &OutboundRequest {
+            token: w.token_id.clone(),
+            amount: HUNDRED,
+            route: RouteKind::Cctp,
+            destination: dest(&w),
+            destination_decimals: EVM_DECIMALS,
+            min_destination_amount: 0,
+        },
+    );
+
+    // The indexer joins the two halves of a transfer on this event, so the topic pair it
+    // filters server-side and the record embedded in the body both have to be what it expects.
+    let (topics, data) = router_event(&w.env, &w.router_id, "out");
+    assert_topics(&w.env, &topics, "hyperion", "out");
+    assert_eq!(topics.len(), 4);
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &topics.get(2).unwrap()),
+        RouteKind::Cctp
+    );
+    assert_eq!(decode::<Address>(&w.env, &topics.get(3).unwrap()), w.user);
+
+    let fee = HUNDRED / 1_000;
+    let transfer = field(&w.env, &data, "transfer");
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &transfer, "nonce")),
+        nonce
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &transfer, "sender")),
+        w.user
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &transfer, "token")),
+        w.token_id
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &transfer, "gross_amount")),
+        HUNDRED
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &transfer, "fee")),
+        fee
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &transfer, "net_amount")),
+        HUNDRED - fee
+    );
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &field(&w.env, &transfer, "route")),
+        RouteKind::Cctp
+    );
+    assert_eq!(
+        decode::<String>(&w.env, &field(&w.env, &transfer, "destination_chain")),
+        w.ethereum()
+    );
+    assert_eq!(
+        decode::<soroban_sdk::BytesN<32>>(&w.env, &field(&w.env, &transfer, "destination")),
+        evm_destination(&w.env, 0x11)
+    );
 }
