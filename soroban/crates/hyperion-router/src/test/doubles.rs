@@ -9,8 +9,11 @@
 use hyperion_core::{AddressKind, HyperionError, RouteKind};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, vec, Address, Bytes, BytesN, Env, IntoVal,
-    String, Symbol,
+    contract, contracterror, contractimpl, contracttype,
+    testutils::Events,
+    vec,
+    xdr::ContractEventBody,
+    Address, Bytes, BytesN, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 use crate::types::{Origin, Recipient};
@@ -306,4 +309,84 @@ pub fn evm_destination(env: &Env, last_byte: u8) -> BytesN<32> {
 /// like if somebody drops it into an EVM address field by mistake.
 pub fn not_an_evm_address(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0x5Au8; 32])
+}
+
+// ------------------------------------------------------------------------------------------
+// Event assertions
+// ------------------------------------------------------------------------------------------
+//
+// The router's published events are part of its spec: the indexer keys transfers and claims off
+// them and the monitoring job watches the privileged ones. These helpers read them back out of
+// the test environment and decode them to the `Val` form they were published as, so a test can
+// name a topic or a field and fail if it moves. Events published by anybody else the router
+// calls, such as the token contract's own `transfer` events, are filtered out by contract.
+
+/// Every event the router itself published during the most recent invocation, as
+/// `(topics, data)` pairs.
+pub fn router_events(env: &Env, router: &Address) -> Vec<(Vec<Val>, Val)> {
+    let mut out = Vec::new(env);
+    let events = env.events().all().filter_by_contract(router);
+    for event in events.events() {
+        let ContractEventBody::V0(body) = &event.body;
+        let mut topics = Vec::new(env);
+        for topic in body.topics.iter() {
+            topics.push_back(Val::try_from_val(env, &topic).unwrap());
+        }
+        out.push_back((topics, Val::try_from_val(env, &body.data).unwrap()));
+    }
+    out
+}
+
+/// The topics and data of the one router event whose second topic is `kind`.
+///
+/// Panics when the event is absent or was published more than once, so a test that expects an
+/// announcement fails if the router ever stops making it.
+pub fn router_event(env: &Env, router: &Address, kind: &str) -> (Vec<Val>, Val) {
+    let wanted = Symbol::new(env, kind);
+    let mut found: Option<(Vec<Val>, Val)> = None;
+    for (topics, data) in router_events(env, router).iter() {
+        let second = topics
+            .get(1)
+            .and_then(|t| Symbol::try_from_val(env, &t).ok());
+        if second == Some(wanted.clone()) {
+            assert!(found.is_none(), "more than one `{}` event", kind);
+            found = Some((topics, data));
+        }
+    }
+    match found {
+        Some(pair) => pair,
+        None => panic!("no `{}` event was published", kind),
+    }
+}
+
+/// Assert that an event opens with exactly the two topics `first` and `second`.
+///
+/// The names are deliberately literals at the call site rather than read back off the `events::`
+/// structs: the whole point is to catch a topic string being renamed in `events.rs`, and reading
+/// it back off the same struct would rename in step and never fail.
+pub fn assert_topics(env: &Env, topics: &Vec<Val>, first: &str, second: &str) {
+    let leading = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    let trailing = Symbol::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(leading, Symbol::new(env, first));
+    assert_eq!(trailing, Symbol::new(env, second));
+}
+
+/// Read a named field out of an event's data, or out of one of the records embedded in it.
+///
+/// Panics if the name is not there, which is what turns an embedded field rename into a failing
+/// test rather than a silently different read.
+pub fn field(env: &Env, value: &Val, name: &str) -> Val {
+    let map = Map::<Symbol, Val>::try_from_val(env, value).unwrap();
+    match map.get(Symbol::new(env, name)) {
+        Some(v) => v,
+        None => panic!("no `{}` field on the event", name),
+    }
+}
+
+/// Decode an event topic or field back into the type it was published as.
+pub fn decode<T>(env: &Env, value: &Val) -> T
+where
+    T: TryFromVal<Env, Val>,
+{
+    T::try_from_val(env, value).unwrap()
 }
