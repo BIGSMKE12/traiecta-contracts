@@ -3,7 +3,7 @@
 use hyperion_core::{AddressKind, HyperionError, RouteKind};
 use soroban_sdk::{testutils::Address as _, Address, String};
 
-use super::doubles::{message_id, Delivery};
+use super::doubles::{assert_topics, decode, field, message_id, router_event, Delivery};
 use super::setup::{World, HUNDRED};
 
 #[test]
@@ -444,4 +444,156 @@ fn the_source_chain_name_is_kept_on_the_claim_for_the_indexer() {
     let claim = w.router().get_claim(&1);
     assert_eq!(claim.source_chain, chain);
     assert_eq!(claim.route, RouteKind::Allbridge);
+}
+
+// ------------------------------------------------------------------------------------------
+// Events the indexer reads
+// ------------------------------------------------------------------------------------------
+
+#[test]
+fn an_arrival_announces_the_inbound_record_under_the_in_topic() {
+    let w = World::new();
+    w.fund_rail(HUNDRED);
+    w.rail().deliver(&Delivery {
+        route: RouteKind::Cctp,
+        token: w.token_id.clone(),
+        amount: HUNDRED,
+        recipient: w.recipient.clone(),
+        recipient_kind: AddressKind::Account,
+        source_chain: w.ethereum(),
+        source_nonce: 42,
+    });
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "in");
+    assert_topics(&w.env, &topics, "hyperion", "in");
+    assert_eq!(topics.len(), 4);
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &topics.get(2).unwrap()),
+        RouteKind::Cctp
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(3).unwrap()),
+        w.recipient
+    );
+
+    let inbound = field(&w.env, &data, "inbound");
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &field(&w.env, &inbound, "route")),
+        RouteKind::Cctp
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &inbound, "recipient")),
+        w.recipient
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &inbound, "token")),
+        w.token_id
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &inbound, "amount")),
+        HUNDRED
+    );
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &inbound, "source_nonce")),
+        42
+    );
+    assert!(decode::<bool>(
+        &w.env,
+        &field(&w.env, &inbound, "delivered")
+    ));
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &inbound, "claim_id")),
+        0
+    );
+}
+
+#[test]
+fn a_parked_delivery_announces_the_claim_under_the_park_topic() {
+    let w = World::new();
+    let token = w.with_failable_token();
+    w.failable(&token).mint(&w.rail_id, &HUNDRED);
+    w.failable(&token).set_blocked(&w.recipient, &true);
+    w.rail().deliver(&Delivery {
+        route: RouteKind::Cctp,
+        token: token.clone(),
+        amount: HUNDRED,
+        recipient: w.recipient.clone(),
+        recipient_kind: AddressKind::Account,
+        source_chain: w.ethereum(),
+        source_nonce: 11,
+    });
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "park");
+    assert_topics(&w.env, &topics, "hyperion", "park");
+    assert_eq!(topics.len(), 4);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.recipient
+    );
+    assert_eq!(decode::<Address>(&w.env, &topics.get(3).unwrap()), token);
+
+    let claim = field(&w.env, &data, "claim");
+    assert_eq!(decode::<u64>(&w.env, &field(&w.env, &claim, "id")), 1);
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &claim, "recipient")),
+        w.recipient
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &claim, "token")),
+        token
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &claim, "amount")),
+        HUNDRED
+    );
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &field(&w.env, &claim, "route")),
+        RouteKind::Cctp
+    );
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &claim, "source_nonce")),
+        11
+    );
+    assert!(!decode::<bool>(&w.env, &field(&w.env, &claim, "settled")));
+}
+
+#[test]
+fn settling_a_claim_announces_it_under_the_settled_topic() {
+    let w = World::new();
+    let token = w.with_failable_token();
+    w.failable(&token).mint(&w.rail_id, &HUNDRED);
+    w.failable(&token).set_blocked(&w.recipient, &true);
+    w.rail().deliver(&Delivery {
+        route: RouteKind::Cctp,
+        token: token.clone(),
+        amount: HUNDRED,
+        recipient: w.recipient.clone(),
+        recipient_kind: AddressKind::Account,
+        source_chain: w.ethereum(),
+        source_nonce: 11,
+    });
+    w.failable(&token).set_blocked(&w.recipient, &false);
+    let settler = Address::generate(&w.env);
+    w.router().settle_claim(&settler, &1);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "settled");
+    assert_topics(&w.env, &topics, "hyperion", "settled");
+    assert_eq!(topics.len(), 3);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.recipient
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &data, "token")),
+        token
+    );
+    assert_eq!(decode::<u64>(&w.env, &field(&w.env, &data, "claim_id")), 1);
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &data, "amount")),
+        HUNDRED
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &field(&w.env, &data, "settled_by")),
+        settler
+    );
 }
