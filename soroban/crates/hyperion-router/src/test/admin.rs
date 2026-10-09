@@ -3,7 +3,7 @@
 use hyperion_core::{HyperionError, RouteKind, MAX_FEE_BPS};
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
 
-use super::doubles::all_routes;
+use super::doubles::{all_routes, assert_topics, decode, field, router_event};
 use super::setup::{World, EVM_DECIMALS, HUNDRED};
 use crate::timelock::{GRACE_PERIOD, MAX_TIMELOCK_DELAY, MIN_TIMELOCK_DELAY};
 use crate::types::{AdminAction, Destination, OutboundRequest};
@@ -529,5 +529,174 @@ fn a_router_that_was_never_initialised_refuses_everything_that_matters() {
     assert_eq!(
         client.try_queue_action(&who, &AdminAction::SetFeeBps(1)),
         Err(Ok(HyperionError::NotInitialized))
+    );
+}
+
+// ------------------------------------------------------------------------------------------
+// Events the indexer and the monitoring job read
+// ------------------------------------------------------------------------------------------
+
+#[test]
+fn initialising_announces_the_opening_config_under_the_config_topic() {
+    let (env, id, admin) = fresh();
+    let client = HyperionRouterClient::new(&env, &id);
+    client.initialize(&admin, &admin, &admin, &10, &720, &MIN_TIMELOCK_DELAY);
+
+    let (topics, data) = router_event(&env, &id, "config");
+    assert_topics(&env, &topics, "hyperion", "config");
+    assert_eq!(topics.len(), 2);
+    let config = field(&env, &data, "config");
+    assert_eq!(
+        decode::<Address>(&env, &field(&env, &config, "admin")),
+        admin
+    );
+    assert_eq!(decode::<u32>(&env, &field(&env, &config, "fee_bps")), 10);
+    assert!(!decode::<bool>(&env, &field(&env, &config, "paused")));
+}
+
+#[test]
+fn pausing_announces_the_new_state_to_the_monitoring_job() {
+    let w = World::new();
+    w.router().pause(&w.guardian);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "pause");
+    assert_topics(&w.env, &topics, "hyperion", "pause");
+    assert_eq!(topics.len(), 3);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.guardian
+    );
+    assert!(decode::<bool>(&w.env, &field(&w.env, &data, "paused")));
+}
+
+#[test]
+fn queueing_a_change_announces_it_under_the_queued_topic() {
+    let w = World::new();
+    let id = w
+        .router()
+        .queue_action(&w.admin, &AdminAction::SetFeeBps(25));
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "queued");
+    assert_topics(&w.env, &topics, "hyperion", "queued");
+    assert_eq!(topics.len(), 2);
+    assert_eq!(decode::<u64>(&w.env, &field(&w.env, &data, "id")), id);
+    assert_eq!(
+        decode::<AdminAction>(&w.env, &field(&w.env, &data, "action")),
+        AdminAction::SetFeeBps(25)
+    );
+
+    // The eta and expiry are what the monitoring job checks the queue against.
+    let queued = w.router().get_queued(&id);
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &data, "eta")),
+        queued.eta
+    );
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &data, "expires_at")),
+        queued.expires_at
+    );
+}
+
+#[test]
+fn executing_a_change_announces_the_action_that_ran() {
+    let w = World::new();
+    let id = w
+        .router()
+        .queue_action(&w.admin, &AdminAction::SetFeeBps(25));
+    let queued = w.router().get_queued(&id);
+    w.advance_time(MIN_TIMELOCK_DELAY + 1);
+    w.router().execute_action(&w.admin, &id);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "executed");
+    assert_topics(&w.env, &topics, "hyperion", "executed");
+    assert_eq!(topics.len(), 2);
+    assert_eq!(decode::<u64>(&w.env, &field(&w.env, &data, "id")), id);
+    assert_eq!(
+        decode::<AdminAction>(&w.env, &field(&w.env, &data, "action")),
+        AdminAction::SetFeeBps(25)
+    );
+    assert_eq!(
+        decode::<u64>(&w.env, &field(&w.env, &data, "queued_at")),
+        queued.queued_at
+    );
+}
+
+#[test]
+fn cancelling_a_queued_change_announces_it_under_the_cancelled_topic() {
+    let w = World::new();
+    let id = w
+        .router()
+        .queue_action(&w.admin, &AdminAction::SetFeeBps(25));
+    w.router().cancel_action(&w.guardian, &id);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "cancelled");
+    assert_topics(&w.env, &topics, "hyperion", "cancelled");
+    assert_eq!(topics.len(), 3);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.guardian
+    );
+    assert_eq!(decode::<u64>(&w.env, &field(&w.env, &data, "id")), id);
+}
+
+#[test]
+fn registering_a_token_announces_the_token_and_its_config() {
+    let w = World::new();
+    w.run_action(AdminAction::RegisterToken(w.token_id.clone(), 7, 12_345));
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "token");
+    assert_topics(&w.env, &topics, "hyperion", "token");
+    assert_eq!(topics.len(), 3);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.token_id
+    );
+    let config = field(&w.env, &data, "config");
+    assert_eq!(
+        decode::<u32>(&w.env, &field(&w.env, &config, "decimals")),
+        7
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &config, "flow_limit")),
+        12_345
+    );
+    assert!(decode::<bool>(&w.env, &field(&w.env, &config, "enabled")));
+}
+
+#[test]
+fn closing_a_route_announces_the_new_state_under_the_route_topic() {
+    let w = World::new();
+    w.router().disable_route(&w.guardian, &RouteKind::Allbridge);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "route");
+    assert_topics(&w.env, &topics, "hyperion", "route");
+    assert_eq!(topics.len(), 3);
+    assert_eq!(
+        decode::<RouteKind>(&w.env, &topics.get(2).unwrap()),
+        RouteKind::Allbridge
+    );
+    assert!(!decode::<bool>(&w.env, &field(&w.env, &data, "enabled")));
+}
+
+#[test]
+fn tightening_a_flow_limit_announces_the_new_limit() {
+    let w = World::new();
+    w.router()
+        .lower_token_flow_limit(&w.guardian, &w.token_id, &1_000);
+
+    let (topics, data) = router_event(&w.env, &w.router_id, "flow");
+    assert_topics(&w.env, &topics, "hyperion", "flow");
+    assert_eq!(topics.len(), 4);
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(2).unwrap()),
+        w.token_id
+    );
+    assert_eq!(
+        decode::<Address>(&w.env, &topics.get(3).unwrap()),
+        w.guardian
+    );
+    assert_eq!(
+        decode::<i128>(&w.env, &field(&w.env, &data, "limit")),
+        1_000
     );
 }
